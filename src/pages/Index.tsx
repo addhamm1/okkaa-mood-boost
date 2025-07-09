@@ -1,4 +1,3 @@
-
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { toast } from 'sonner';
 
@@ -9,15 +8,29 @@ interface GameState {
   drinkCooldown: number;
   gameStatus: 'attract' | 'playing' | 'victory' | 'defeat';
   attractTimer: number;
+  coffeeCups: CoffeeCup[];
+  score: number;
+}
+
+interface CoffeeCup {
+  id: number;
+  x: number;
+  y: number;
+  speed: number;
+  collected: boolean;
 }
 
 const GAME_CONFIG = {
   CANVAS_WIDTH: 1080,
   CANVAS_HEIGHT: 1920,
-  HERO_SPEED: 30,
-  SPOUT_X: 270, // Position under coffee machine
+  HERO_SPEED: 8,
+  HERO_SIZE: 60,
+  CUP_SIZE: 40,
+  CUP_SPAWN_RATE: 0.8, // seconds between cups
+  CUP_SPEED: 300, // pixels per second
+  SPOUT_X: 270,
   SPOUT_TOLERANCE: 80,
-  DRINK_COOLDOWN: 0.8,
+  DRINK_COOLDOWN: 0.5,
   MOOD_INCREASE: 10,
   GAME_DURATION: 60,
   ATTRACT_TIMEOUT: 5,
@@ -31,13 +44,20 @@ const COLORS = {
   TEAL: '#00A7A5',
   CREAM: '#F5E6D3',
   SKY: '#87CEEB',
-  STREET: '#696969'
+  STREET: '#696969',
+  WHITE: '#FFFFFF',
+  BLACK: '#000000',
+  GOLD: '#FFD700',
+  SHADOW: 'rgba(0, 0, 0, 0.3)'
 };
 
 const CoffeeGame = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const backgroundImageRef = useRef<HTMLImageElement | null>(null);
   const gameLoopRef = useRef<number>();
   const lastTimeRef = useRef<number>(0);
+  const cupSpawnTimerRef = useRef<number>(0);
+  const cupIdCounterRef = useRef<number>(0);
   
   const [gameState, setGameState] = useState<GameState>({
     mood: 0,
@@ -45,149 +65,440 @@ const CoffeeGame = () => {
     heroX: GAME_CONFIG.CANVAS_WIDTH / 2,
     drinkCooldown: 0,
     gameStatus: 'attract',
-    attractTimer: 0
+    attractTimer: 0,
+    coffeeCups: [],
+    score: 0
   });
 
   const [isDragging, setIsDragging] = useState(false);
   const [dragStartX, setDragStartX] = useState(0);
   const [heroStartX, setHeroStartX] = useState(0);
 
+  // Load background image
+  useEffect(() => {
+    const img = new Image();
+    img.onload = () => {
+      backgroundImageRef.current = img;
+    };
+    img.src = '/lovable-uploads/651e5604-70a3-494d-9990-6a4c17414faa.png';
+  }, []);
+
   // Draw functions
   const drawBackground = (ctx: CanvasRenderingContext2D) => {
-    // Sky gradient
+    // Draw the uploaded background image if loaded
+    if (backgroundImageRef.current) {
+      ctx.save();
+      // Scale and position the background to fit the canvas
+      const aspectRatio = backgroundImageRef.current.width / backgroundImageRef.current.height;
+      const canvasAspectRatio = GAME_CONFIG.CANVAS_WIDTH / GAME_CONFIG.CANVAS_HEIGHT;
+      
+      let drawWidth, drawHeight, offsetX = 0, offsetY = 0;
+      
+      if (aspectRatio > canvasAspectRatio) {
+        // Image is wider than canvas ratio
+        drawHeight = GAME_CONFIG.CANVAS_HEIGHT;
+        drawWidth = drawHeight * aspectRatio;
+        offsetX = (GAME_CONFIG.CANVAS_WIDTH - drawWidth) / 2;
+      } else {
+        // Image is taller than canvas ratio
+        drawWidth = GAME_CONFIG.CANVAS_WIDTH;
+        drawHeight = drawWidth / aspectRatio;
+        offsetY = (GAME_CONFIG.CANVAS_HEIGHT - drawHeight) / 2;
+      }
+      
+      ctx.drawImage(backgroundImageRef.current, offsetX, offsetY, drawWidth, drawHeight);
+      
+      // Add a slight overlay to make game elements more visible
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+      ctx.fillRect(0, 0, GAME_CONFIG.CANVAS_WIDTH, GAME_CONFIG.CANVAS_HEIGHT);
+      ctx.restore();
+    } else {
+      // Fallback background with Egyptian street theme
+      drawPixelArtBackground(ctx);
+    }
+  };
+
+  const drawPixelArtBackground = (ctx: CanvasRenderingContext2D) => {
+    // Sky with gradient
     const skyGradient = ctx.createLinearGradient(0, 0, 0, 600);
     skyGradient.addColorStop(0, COLORS.SKY);
     skyGradient.addColorStop(1, COLORS.CREAM);
     ctx.fillStyle = skyGradient;
     ctx.fillRect(0, 0, GAME_CONFIG.CANVAS_WIDTH, 600);
 
-    // Street
+    // Street cobblestones pattern
     ctx.fillStyle = COLORS.STREET;
     ctx.fillRect(0, 600, GAME_CONFIG.CANVAS_WIDTH, GAME_CONFIG.CANVAS_HEIGHT - 600);
+    
+    // Add cobblestone texture
+    for (let y = 600; y < GAME_CONFIG.CANVAS_HEIGHT; y += 40) {
+      for (let x = 0; x < GAME_CONFIG.CANVAS_WIDTH; x += 40) {
+        ctx.strokeStyle = COLORS.COFFEE_DARK;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, 40, 40);
+      }
+    }
 
-    // Kiosk structure
+    // Traditional Egyptian shop fronts
+    drawShopFronts(ctx);
+    drawStreetDetails(ctx);
+  };
+
+  const drawShopFronts = (ctx: CanvasRenderingContext2D) => {
+    // Main coffee shop structure
     ctx.fillStyle = COLORS.COFFEE_DARK;
     ctx.fillRect(50, 200, 400, 350);
     
-    // Kiosk roof
+    // Shop roof with traditional pattern
     ctx.fillStyle = COLORS.COFFEE_MID;
     ctx.fillRect(30, 180, 440, 30);
-
-    // Arabic shop sign
-    ctx.fillStyle = COLORS.TEAL;
-    ctx.fillRect(80, 220, 340, 60);
-    ctx.fillStyle = 'white';
-    ctx.font = '24px Arial';
-    ctx.textAlign = 'center';
-    ctx.fillText('قهوة سريعة', 250, 255);
-
-    // Tuk-tuk silhouette
-    ctx.fillStyle = COLORS.COFFEE_DARK;
-    ctx.fillRect(600, 480, 120, 80);
-    ctx.fillRect(650, 460, 50, 20);
-    // Tuk-tuk wheels
+    
+    // Decorative arch
     ctx.beginPath();
-    ctx.arc(630, 560, 20, 0, Math.PI * 2);
-    ctx.arc(690, 560, 20, 0, Math.PI * 2);
+    ctx.arc(250, 300, 50, 0, Math.PI);
+    ctx.fillStyle = COLORS.TEAL;
     ctx.fill();
+    
+    // Arabic shop sign with decorative border
+    ctx.fillStyle = COLORS.TEAL;
+    ctx.fillRect(80, 220, 340, 80);
+    ctx.strokeStyle = COLORS.GOLD;
+    ctx.lineWidth = 4;
+    ctx.strokeRect(80, 220, 340, 80);
+    
+    // Arabic text
+    ctx.fillStyle = COLORS.WHITE;
+    ctx.font = 'bold 32px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('قهوة أوكا', 250, 255);
+    ctx.font = '20px Arial';
+    ctx.fillText('OKKAA COFFEE', 250, 280);
 
-    // Nile skyline silhouettes
+    // Shop windows with traditional mashrabiya pattern
+    drawMashrabiya(ctx, 100, 320, 80, 60);
+    drawMashrabiya(ctx, 320, 320, 80, 60);
+  };
+
+  const drawMashrabiya = (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) => {
+    ctx.fillStyle = COLORS.COFFEE_MID;
+    ctx.fillRect(x, y, w, h);
+    
+    // Geometric pattern
+    ctx.strokeStyle = COLORS.CREAM;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 4; i++) {
+      for (let j = 0; j < 3; j++) {
+        const cx = x + (i + 0.5) * (w / 4);
+        const cy = y + (j + 0.5) * (h / 3);
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  };
+
+  const drawStreetDetails = (ctx: CanvasRenderingContext2D) => {
+    // Traditional tuk-tuk with detailed pixel art
+    drawTukTuk(ctx, 600, 480);
+    
+    // Cairo skyline silhouettes with minarets
+    drawSkyline(ctx);
+    
+    // Street lamp
     ctx.fillStyle = COLORS.COFFEE_DARK;
-    ctx.fillRect(800, 300, 60, 300);
-    ctx.fillRect(900, 250, 80, 350);
-    ctx.fillRect(1000, 320, 50, 280);
+    ctx.fillRect(900, 400, 20, 200);
+    ctx.beginPath();
+    ctx.arc(910, 400, 25, 0, Math.PI * 2);
+    ctx.fillStyle = COLORS.GOLD;
+    ctx.fill();
+  };
+
+  const drawTukTuk = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
+    // Main body
+    ctx.fillStyle = COLORS.TEAL;
+    ctx.fillRect(x, y, 120, 80);
+    
+    // Canopy
+    ctx.fillStyle = COLORS.COFFEE_DARK;
+    ctx.fillRect(x + 10, y - 20, 100, 20);
+    
+    // Decorative stripes
+    ctx.fillStyle = COLORS.GOLD;
+    ctx.fillRect(x + 10, y + 20, 100, 4);
+    ctx.fillRect(x + 10, y + 40, 100, 4);
+    
+    // Wheels with spokes
+    drawWheel(ctx, x + 30, y + 80, 20);
+    drawWheel(ctx, x + 90, y + 80, 20);
+  };
+
+  const drawWheel = (ctx: CanvasRenderingContext2D, x: number, y: number, radius: number) => {
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = COLORS.COFFEE_DARK;
+    ctx.fill();
+    
+    // Spokes
+    ctx.strokeStyle = COLORS.CREAM;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 8; i++) {
+      const angle = (i * Math.PI * 2) / 8;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + Math.cos(angle) * radius, y + Math.sin(angle) * radius);
+      ctx.stroke();
+    }
+  };
+
+  const drawSkyline = (ctx: CanvasRenderingContext2D) => {
+    // Mosque with minaret
+    ctx.fillStyle = COLORS.COFFEE_DARK;
+    ctx.fillRect(800, 250, 80, 150);
+    
+    // Minaret
+    ctx.fillRect(820, 150, 20, 100);
+    
+    // Dome
+    ctx.beginPath();
+    ctx.arc(840, 250, 40, 0, Math.PI);
+    ctx.fill();
+    
+    // Crescent
+    ctx.strokeStyle = COLORS.GOLD;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(840, 230, 8, 0, Math.PI);
+    ctx.stroke();
   };
 
   const drawOkkaMachine = (ctx: CanvasRenderingContext2D) => {
-    // Machine body
+    const machineX = 200;
+    const machineY = 100;
+    
+    // Machine body with detailed pixel art
     ctx.fillStyle = COLORS.TEAL;
-    ctx.fillRect(200, 100, 140, 200);
+    ctx.fillRect(machineX, machineY, 140, 200);
     
-    // Machine details
+    // Machine border
+    ctx.strokeStyle = COLORS.COFFEE_DARK;
+    ctx.lineWidth = 4;
+    ctx.strokeRect(machineX, machineY, 140, 200);
+    
+    // Control panel
     ctx.fillStyle = COLORS.COFFEE_DARK;
-    ctx.fillRect(210, 120, 120, 40);
+    ctx.fillRect(machineX + 10, machineY + 20, 120, 60);
     
-    // Okkaa logo
-    ctx.fillStyle = 'white';
-    ctx.font = 'bold 18px Arial';
+    // Okkaa logo with background
+    ctx.fillStyle = COLORS.WHITE;
+    ctx.fillRect(machineX + 20, machineY + 30, 100, 40);
+    ctx.fillStyle = COLORS.TEAL;
+    ctx.font = 'bold 24px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('OKKAA', 270, 145);
+    ctx.fillText('OKKAA', machineX + 70, machineY + 55);
     
-    // Coffee spout
+    // Buttons and indicators
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = i === 1 ? COLORS.GOLD : COLORS.COFFEE_MID;
+      ctx.beginPath();
+      ctx.arc(machineX + 30 + i * 30, machineY + 100, 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    
+    // Coffee spout with detailed design
     ctx.fillStyle = COLORS.COFFEE_MID;
-    ctx.fillRect(260, 280, 20, 40);
+    ctx.fillRect(machineX + 60, machineY + 180, 20, 40);
+    ctx.fillRect(machineX + 55, machineY + 220, 30, 10);
     
-    // Steam animation (simple)
+    // Steam animation
+    drawSteam(ctx, machineX + 70, machineY + 160);
+    
+    // Coffee drip animation
+    if (gameState.gameStatus === 'playing') {
+      drawCoffeeDrip(ctx, machineX + 70, machineY + 230);
+    }
+  };
+
+  const drawSteam = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
     ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-    const steamOffset = Math.sin(Date.now() * 0.01) * 5;
-    ctx.fillRect(265 + steamOffset, 260, 3, 15);
-    ctx.fillRect(270 + steamOffset * 0.5, 250, 2, 20);
-    ctx.fillRect(275 + steamOffset * 1.2, 255, 3, 18);
+    const time = Date.now() * 0.005;
+    
+    for (let i = 0; i < 5; i++) {
+      const offset = Math.sin(time + i) * 10;
+      const alpha = 0.8 - (i * 0.15);
+      ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+      ctx.beginPath();
+      ctx.arc(x + offset, y - i * 8, 3 + i, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+
+  const drawCoffeeDrip = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
+    const dripY = y + (Date.now() % 1000) / 10;
+    ctx.fillStyle = COLORS.COFFEE_DARK;
+    ctx.beginPath();
+    ctx.arc(x, dripY, 2, 0, Math.PI * 2);
+    ctx.fill();
   };
 
   const drawHero = (ctx: CanvasRenderingContext2D, x: number, isUnderSpout: boolean, isDrinking: boolean) => {
     const heroY = 1400;
     
-    // Hero body
-    ctx.fillStyle = COLORS.COFFEE_MID; // Camel-brown jacket
+    // Shadow
+    ctx.fillStyle = COLORS.SHADOW;
+    ctx.fillRect(x - 30, heroY + 15, 60, 10);
+    
+    // Hero body with detailed pixel art
+    ctx.fillStyle = COLORS.COFFEE_MID; // Camel-brown galabiya
     ctx.fillRect(x - 25, heroY - 80, 50, 80);
+    
+    // Traditional pattern on galabiya
+    ctx.fillStyle = COLORS.TEAL;
+    for (let i = 0; i < 3; i++) {
+      ctx.fillRect(x - 20 + i * 15, heroY - 60, 10, 4);
+    }
     
     // Hero head
     ctx.fillStyle = COLORS.COFFEE_LIGHT;
     ctx.fillRect(x - 20, heroY - 120, 40, 40);
     
-    // Sunglasses
-    ctx.fillStyle = COLORS.COFFEE_DARK;
-    ctx.fillRect(x - 15, heroY - 110, 30, 8);
+    // Traditional taqiyah (cap)
+    ctx.fillStyle = COLORS.WHITE;
+    ctx.fillRect(x - 18, heroY - 125, 36, 15);
+    ctx.fillStyle = COLORS.TEAL;
+    ctx.fillRect(x - 15, heroY - 120, 30, 8);
     
-    // Stubble
+    // Beard
     ctx.fillStyle = COLORS.COFFEE_DARK;
-    ctx.fillRect(x - 10, heroY - 90, 20, 5);
+    ctx.fillRect(x - 12, heroY - 90, 24, 8);
     
-    // Shoes
-    ctx.fillStyle = COLORS.COFFEE_DARK; // Mocha shoes
-    ctx.fillRect(x - 30, heroY, 25, 15);
-    ctx.fillRect(x + 5, heroY, 25, 15);
+    // Traditional sandals
+    ctx.fillStyle = COLORS.COFFEE_DARK;
+    ctx.fillRect(x - 28, heroY, 22, 12);
+    ctx.fillRect(x + 6, heroY, 22, 12);
     
     // Animation states
     if (isDrinking) {
-      // Head tilted back, add sparkles
-      ctx.fillStyle = COLORS.TEAL;
-      ctx.fillRect(x - 5, heroY - 130, 3, 3);
-      ctx.fillRect(x + 8, heroY - 125, 3, 3);
-      ctx.fillRect(x - 8, heroY - 120, 3, 3);
-    } else if (gameState.mood === 100) {
-      // Happy bounce
-      const bounceOffset = Math.sin(Date.now() * 0.01) * 3;
-      ctx.translate(0, bounceOffset);
+      // Drinking animation with sparkles
+      ctx.save();
+      ctx.translate(0, -5);
+      drawSparkles(ctx, x, heroY - 100);
+      ctx.restore();
+    } else if (gameState.mood >= 80) {
+      // Happy animation
+      const bounce = Math.sin(Date.now() * 0.01) * 3;
+      ctx.save();
+      ctx.translate(0, bounce);
     } else if (gameState.mood < 30) {
-      // Slouched/sad posture
-      ctx.translate(0, 10);
+      // Tired/slouched animation
+      ctx.save();
+      ctx.translate(0, 5);
+    }
+    
+    if (gameState.mood >= 80 || isDrinking) {
+      ctx.restore();
     }
   };
 
+  const drawSparkles = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
+    ctx.fillStyle = COLORS.GOLD;
+    const time = Date.now() * 0.01;
+    
+    for (let i = 0; i < 6; i++) {
+      const angle = (i * Math.PI * 2) / 6 + time;
+      const sparkleX = x + Math.cos(angle) * 25;
+      const sparkleY = y + Math.sin(angle) * 15;
+      const size = 2 + Math.sin(time + i) * 1;
+      
+      ctx.beginPath();
+      ctx.arc(sparkleX, sparkleY, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+
+  const drawCoffeeCups = (ctx: CanvasRenderingContext2D) => {
+    gameState.coffeeCups.forEach(cup => {
+      if (!cup.collected) {
+        drawCoffeeCup(ctx, cup.x, cup.y);
+      }
+    });
+  };
+
+  const drawCoffeeCup = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
+    // Cup shadow
+    ctx.fillStyle = COLORS.SHADOW;
+    ctx.fillRect(x - GAME_CONFIG.CUP_SIZE/2 + 2, y + GAME_CONFIG.CUP_SIZE/2 + 2, GAME_CONFIG.CUP_SIZE, 8);
+    
+    // Cup body
+    ctx.fillStyle = COLORS.WHITE;
+    ctx.fillRect(x - GAME_CONFIG.CUP_SIZE/2, y - GAME_CONFIG.CUP_SIZE/2, GAME_CONFIG.CUP_SIZE, GAME_CONFIG.CUP_SIZE);
+    
+    // Cup border
+    ctx.strokeStyle = COLORS.COFFEE_DARK;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x - GAME_CONFIG.CUP_SIZE/2, y - GAME_CONFIG.CUP_SIZE/2, GAME_CONFIG.CUP_SIZE, GAME_CONFIG.CUP_SIZE);
+    
+    // Coffee inside
+    ctx.fillStyle = COLORS.COFFEE_DARK;
+    ctx.fillRect(x - GAME_CONFIG.CUP_SIZE/2 + 4, y - GAME_CONFIG.CUP_SIZE/2 + 4, GAME_CONFIG.CUP_SIZE - 8, GAME_CONFIG.CUP_SIZE/2);
+    
+    // Steam
+    drawSteam(ctx, x, y - GAME_CONFIG.CUP_SIZE/2);
+    
+    // Handle
+    ctx.strokeStyle = COLORS.COFFEE_DARK;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(x + GAME_CONFIG.CUP_SIZE/2 + 8, y, 10, -Math.PI/2, Math.PI/2);
+    ctx.stroke();
+  };
+
   const drawHUD = (ctx: CanvasRenderingContext2D) => {
+    // Mood bar with decorative frame
+    const barX = 600, barY = 100, barW = 400, barH = 40;
+    
+    // Decorative frame
+    ctx.fillStyle = COLORS.GOLD;
+    ctx.fillRect(barX - 5, barY - 5, barW + 10, barH + 10);
+    
     // Mood bar background
     ctx.fillStyle = COLORS.COFFEE_DARK;
-    ctx.fillRect(600, 100, 400, 40);
+    ctx.fillRect(barX, barY, barW, barH);
     
-    // Mood bar fill
-    const fillWidth = (gameState.mood / 100) * 390;
-    ctx.fillStyle = COLORS.TEAL;
-    ctx.fillRect(605, 105, fillWidth, 30);
+    // Mood bar fill with gradient
+    const fillWidth = (gameState.mood / 100) * (barW - 10);
+    const moodGradient = ctx.createLinearGradient(barX + 5, 0, barX + barW - 5, 0);
+    moodGradient.addColorStop(0, COLORS.COFFEE_MID);
+    moodGradient.addColorStop(0.5, COLORS.TEAL);
+    moodGradient.addColorStop(1, COLORS.GOLD);
+    ctx.fillStyle = moodGradient;
+    ctx.fillRect(barX + 5, barY + 5, fillWidth, barH - 10);
     
-    // Mood bar label
-    ctx.fillStyle = 'white';
+    // Mood bar label with Arabic
+    ctx.fillStyle = COLORS.WHITE;
+    ctx.font = 'bold 28px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('مزاج - MOOD', barX, barY - 15);
+    
+    // Mood percentage
+    ctx.textAlign = 'right';
+    ctx.fillText(`${gameState.mood}%`, barX + barW, barY + 30);
+    
+    // Timer with decorative background
+    ctx.fillStyle = COLORS.GOLD;
+    ctx.fillRect(920, 160, 160, 60);
+    ctx.fillStyle = COLORS.COFFEE_DARK;
+    ctx.fillRect(925, 165, 150, 50);
+    
+    ctx.fillStyle = COLORS.WHITE;
+    ctx.font = 'bold 36px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${Math.ceil(gameState.timeLeft)}s`, 1000, 200);
+    
+    // Score
+    ctx.fillStyle = COLORS.WHITE;
     ctx.font = 'bold 24px Arial';
     ctx.textAlign = 'left';
-    ctx.fillText('MOOD', 610, 80);
-    ctx.fillText(`${gameState.mood}%`, 920, 130);
-    
-    // Timer
-    ctx.fillStyle = COLORS.COFFEE_DARK;
-    ctx.font = 'bold 36px Arial';
-    ctx.textAlign = 'right';
-    ctx.fillText(`${Math.ceil(gameState.timeLeft)}s`, 1000, 200);
+    ctx.fillText(`Score: ${gameState.score}`, 50, 50);
   };
 
   const drawDrinkButton = (ctx: CanvasRenderingContext2D) => {
@@ -196,65 +507,85 @@ const CoffeeGame = () => {
     const buttonX = GAME_CONFIG.CANVAS_WIDTH / 2 - buttonSize / 2;
     
     // Button shadow
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.fillStyle = COLORS.SHADOW;
     ctx.fillRect(buttonX + 5, buttonY + 5, buttonSize, buttonSize);
     
-    // Button body
+    // Button body with decorative border
     ctx.fillStyle = gameState.drinkCooldown > 0 ? COLORS.COFFEE_MID : COLORS.TEAL;
     ctx.fillRect(buttonX, buttonY, buttonSize, buttonSize);
     
-    // Button border
-    ctx.strokeStyle = COLORS.COFFEE_DARK;
-    ctx.lineWidth = 4;
+    // Decorative gold border
+    ctx.strokeStyle = COLORS.GOLD;
+    ctx.lineWidth = 6;
     ctx.strokeRect(buttonX, buttonY, buttonSize, buttonSize);
     
-    // Coffee cup icon
-    ctx.fillStyle = 'white';
+    // Coffee cup icon with steam
+    ctx.fillStyle = COLORS.WHITE;
     ctx.fillRect(buttonX + 50, buttonY + 40, 50, 60);
     ctx.fillRect(buttonX + 45, buttonY + 100, 60, 10);
     
+    // Coffee inside cup
+    ctx.fillStyle = COLORS.COFFEE_DARK;
+    ctx.fillRect(buttonX + 55, buttonY + 50, 40, 30);
+    
+    // Steam on button
+    drawSteam(ctx, buttonX + 75, buttonY + 35);
+    
     // Handle
-    ctx.strokeStyle = 'white';
+    ctx.strokeStyle = COLORS.WHITE;
     ctx.lineWidth = 6;
     ctx.beginPath();
     ctx.arc(buttonX + 110, buttonY + 60, 15, 0, Math.PI);
     ctx.stroke();
     
-    // "DRINK" text
-    ctx.fillStyle = 'white';
-    ctx.font = 'bold 20px Arial';
+    // "DRINK" text in Arabic and English
+    ctx.fillStyle = COLORS.WHITE;
+    ctx.font = 'bold 18px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('DRINK', buttonX + buttonSize / 2, buttonY + 135);
+    ctx.fillText('اشرب', buttonX + buttonSize / 2, buttonY + 125);
+    ctx.fillText('DRINK', buttonX + buttonSize / 2, buttonY + 145);
   };
 
   const drawScreen = (ctx: CanvasRenderingContext2D, type: string) => {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
     ctx.fillRect(0, 0, GAME_CONFIG.CANVAS_WIDTH, GAME_CONFIG.CANVAS_HEIGHT);
     
-    ctx.fillStyle = 'white';
+    // Decorative frame
+    ctx.strokeStyle = COLORS.GOLD;
+    ctx.lineWidth = 8;
+    ctx.strokeRect(100, 600, GAME_CONFIG.CANVAS_WIDTH - 200, 600);
+    
+    ctx.fillStyle = COLORS.WHITE;
     ctx.font = 'bold 48px Arial';
     ctx.textAlign = 'center';
     
     switch (type) {
       case 'attract':
-        ctx.fillText('MOOD BOOSTER', GAME_CONFIG.CANVAS_WIDTH / 2, 800);
-        ctx.fillText('OKKAA COFFEE', GAME_CONFIG.CANVAS_WIDTH / 2, 870);
+        ctx.fillStyle = COLORS.TEAL;
+        ctx.fillText('محفز المزاج', GAME_CONFIG.CANVAS_WIDTH / 2, 800);
+        ctx.fillStyle = COLORS.WHITE;
+        ctx.fillText('MOOD BOOSTER', GAME_CONFIG.CANVAS_WIDTH / 2, 870);
+        ctx.fillText('OKKAA COFFEE', GAME_CONFIG.CANVAS_WIDTH / 2, 940);
         ctx.font = '32px Arial';
-        ctx.fillText('Tap to Start!', GAME_CONFIG.CANVAS_WIDTH / 2, 1000);
+        ctx.fillText('اضغط للبدء - Tap to Start!', GAME_CONFIG.CANVAS_WIDTH / 2, 1050);
         break;
       case 'victory':
-        ctx.fillStyle = COLORS.TEAL;
-        ctx.fillText('VICTORY!', GAME_CONFIG.CANVAS_WIDTH / 2, 800);
-        ctx.fillStyle = 'white';
+        ctx.fillStyle = COLORS.GOLD;
+        ctx.fillText('انتصار!', GAME_CONFIG.CANVAS_WIDTH / 2, 800);
+        ctx.fillStyle = COLORS.WHITE;
+        ctx.fillText('VICTORY!', GAME_CONFIG.CANVAS_WIDTH / 2, 870);
         ctx.font = '32px Arial';
-        ctx.fillText('Mood Charged!', GAME_CONFIG.CANVAS_WIDTH / 2, 900);
+        ctx.fillText(`Final Score: ${gameState.score}`, GAME_CONFIG.CANVAS_WIDTH / 2, 950);
+        ctx.fillText('مزاج ممتاز! - Mood Charged!', GAME_CONFIG.CANVAS_WIDTH / 2, 1000);
         break;
       case 'defeat':
         ctx.fillStyle = COLORS.COFFEE_DARK;
-        ctx.fillText('TRY AGAIN', GAME_CONFIG.CANVAS_WIDTH / 2, 800);
-        ctx.fillStyle = 'white';
+        ctx.fillText('حاول مرة أخرى', GAME_CONFIG.CANVAS_WIDTH / 2, 800);
+        ctx.fillStyle = COLORS.WHITE;
+        ctx.fillText('TRY AGAIN', GAME_CONFIG.CANVAS_WIDTH / 2, 870);
         ctx.font = '32px Arial';
-        ctx.fillText('Need More Coffee!', GAME_CONFIG.CANVAS_WIDTH / 2, 900);
+        ctx.fillText(`Score: ${gameState.score}`, GAME_CONFIG.CANVAS_WIDTH / 2, 950);
+        ctx.fillText('تحتاج مزيد من القهوة!', GAME_CONFIG.CANVAS_WIDTH / 2, 1000);
         break;
     }
     
@@ -262,6 +593,15 @@ const CoffeeGame = () => {
     ctx.font = '16px Arial';
     ctx.textAlign = 'right';
     ctx.fillText('© Okkaa 2025', GAME_CONFIG.CANVAS_WIDTH - 20, GAME_CONFIG.CANVAS_HEIGHT - 20);
+  };
+
+  // Collision detection
+  const checkCupCollision = (heroX: number, heroY: number, cup: CoffeeCup) => {
+    const heroHalfSize = GAME_CONFIG.HERO_SIZE / 2;
+    const cupHalfSize = GAME_CONFIG.CUP_SIZE / 2;
+    
+    return Math.abs(heroX - cup.x) < (heroHalfSize + cupHalfSize) &&
+           Math.abs(heroY - cup.y) < (heroHalfSize + cupHalfSize);
   };
 
   const isHeroUnderSpout = () => {
@@ -272,14 +612,15 @@ const CoffeeGame = () => {
     if (gameState.gameStatus !== 'playing') return;
     if (gameState.drinkCooldown > 0) return;
     if (!isHeroUnderSpout()) {
-      toast("Move under the coffee spout!");
+      toast("انتقل تحت صنبور القهوة! - Move under the coffee spout!");
       return;
     }
 
     setGameState(prev => ({
       ...prev,
       mood: Math.min(prev.mood + GAME_CONFIG.MOOD_INCREASE, 100),
-      drinkCooldown: GAME_CONFIG.DRINK_COOLDOWN
+      drinkCooldown: GAME_CONFIG.DRINK_COOLDOWN,
+      score: prev.score + 50
     }));
 
     toast("☕ يا سلام! Coffee power +10!");
@@ -292,15 +633,20 @@ const CoffeeGame = () => {
       heroX: GAME_CONFIG.CANVAS_WIDTH / 2,
       drinkCooldown: 0,
       gameStatus: 'playing',
-      attractTimer: 0
+      attractTimer: 0,
+      coffeeCups: [],
+      score: 0
     });
+    cupSpawnTimerRef.current = 0;
+    cupIdCounterRef.current = 0;
   };
 
   const resetToAttract = () => {
     setGameState(prev => ({
       ...prev,
       gameStatus: 'attract',
-      attractTimer: 0
+      attractTimer: 0,
+      coffeeCups: []
     }));
   };
 
@@ -325,12 +671,40 @@ const CoffeeGame = () => {
 
       if (newState.gameStatus === 'attract') {
         newState.attractTimer += deltaTime;
-        if (newState.attractTimer >= GAME_CONFIG.ATTRACT_TIMEOUT) {
-          // Auto-start after idle time
-        }
       } else if (newState.gameStatus === 'playing') {
         newState.timeLeft = Math.max(0, newState.timeLeft - deltaTime);
         newState.drinkCooldown = Math.max(0, newState.drinkCooldown - deltaTime);
+
+        // Spawn coffee cups
+        cupSpawnTimerRef.current += deltaTime;
+        if (cupSpawnTimerRef.current >= GAME_CONFIG.CUP_SPAWN_RATE) {
+          newState.coffeeCups.push({
+            id: cupIdCounterRef.current++,
+            x: Math.random() * (GAME_CONFIG.CANVAS_WIDTH - 100) + 50,
+            y: -GAME_CONFIG.CUP_SIZE,
+            speed: GAME_CONFIG.CUP_SPEED + Math.random() * 100,
+            collected: false
+          });
+          cupSpawnTimerRef.current = 0;
+        }
+
+        // Update coffee cups
+        newState.coffeeCups = newState.coffeeCups.filter(cup => {
+          if (!cup.collected) {
+            cup.y += cup.speed * deltaTime;
+            
+            // Check collision with hero
+            if (checkCupCollision(newState.heroX, 1400, cup)) {
+              cup.collected = true;
+              newState.mood = Math.min(newState.mood + GAME_CONFIG.MOOD_INCREASE, 100);
+              newState.score += 100;
+              toast("☕ قهوة لذيذة! +10 مزاج");
+            }
+          }
+          
+          // Remove cups that are off screen
+          return cup.y < GAME_CONFIG.CANVAS_HEIGHT + GAME_CONFIG.CUP_SIZE;
+        });
 
         // Check win/lose conditions
         if (newState.mood >= 100) {
@@ -346,24 +720,23 @@ const CoffeeGame = () => {
     });
 
     // Draw game
+    drawBackground(ctx);
+    drawOkkaMachine(ctx);
+    
     if (gameState.gameStatus === 'playing') {
-      drawBackground(ctx);
-      drawOkkaMachine(ctx);
+      drawCoffeeCups(ctx);
       drawHero(ctx, gameState.heroX, isHeroUnderSpout(), gameState.drinkCooldown > 0.5);
       drawHUD(ctx);
       drawDrinkButton(ctx);
     } else {
-      drawBackground(ctx);
-      drawOkkaMachine(ctx);
       drawHero(ctx, gameState.heroX, false, false);
       drawScreen(ctx, gameState.gameStatus);
     }
 
     ctx.restore();
     gameLoopRef.current = requestAnimationFrame(gameLoop);
-  }, [gameState, isHeroUnderSpout, resetToAttract]);
+  }, [gameState, isHeroUnderSpout, resetToAttract, handleDrink]);
 
-  // Touch/Mouse handlers
   const handlePointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -408,7 +781,6 @@ const CoffeeGame = () => {
     setIsDragging(false);
   };
 
-  // Keyboard controls
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (gameState.gameStatus !== 'playing') return;
 
@@ -432,20 +804,16 @@ const CoffeeGame = () => {
     }
   }, [gameState.gameStatus, handleDrink]);
 
-  // Initialize game
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Set canvas size
     canvas.width = GAME_CONFIG.CANVAS_WIDTH;
     canvas.height = GAME_CONFIG.CANVAS_HEIGHT;
 
-    // Start game loop
     lastTimeRef.current = performance.now();
     gameLoopRef.current = requestAnimationFrame(gameLoop);
 
-    // Add keyboard listeners
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
